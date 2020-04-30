@@ -30,7 +30,7 @@ class ExampleBatchProcessor(BatchProcessor):
 
 
 tq = TaskQueue(
-    batch_processor=ExampleBatchProcessor(1),
+    batch_processor=ExampleBatchProcessor(2),
     batch_time=3
 )
 
