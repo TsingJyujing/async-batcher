@@ -64,7 +64,9 @@ class TaskQueue(Thread):
             raise Exception("Task queue was stopped to accept task.")
 
     def _process(self):
+        log.debug("[BP] Process starting, waiting for lock")
         with self._execution_lock:
+            log.debug("[BP] Lock acquired")
             self._batch_processor.process([self._queue.get() for _ in range(min(
                 self._queue.qsize(),
                 self._batch_processor.get_batch_size()
@@ -72,12 +74,16 @@ class TaskQueue(Thread):
             self._count_trigger.acquire(blocking=False)
 
     def run(self) -> None:
+        log.info("Batch service started.")
         while not (self._stop and self._queue.qsize() == 0):
+            if self._stop:
+                log.info("Exit flag set, cleaning queue...")
             try:
-                if self._queue.qsize() < self._batch_processor.get_batch_size():
+                if self._queue.qsize() < self._batch_processor.get_batch_size() and not self._stop:
                     self._count_trigger.acquire(timeout=self._interval)
                 if self._queue.qsize() > 0:
                     self._process()
             except Exception as ex:
                 log.fatal("Some critical error happened while doing batch", exc_info=ex)
                 time.sleep(1)
+        log.info("Queue cleaned, exiting batch process.")
