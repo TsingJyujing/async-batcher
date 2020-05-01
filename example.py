@@ -89,6 +89,24 @@ async def read_root():
     return RedirectResponse("docs")
 
 
+@app.post("/set/interval")
+async def set_interval(interval: float):
+    """
+    Got to document
+    """
+    app.task_queue._interval = interval
+    return {"status": "success"}
+
+
+@app.post("/set/batch_size")
+async def set_batch_size(batch_size: int):
+    """
+    Got to document
+    """
+    app.task_queue._batch_processor.batch_size = batch_size
+    return {"status": "success"}
+
+
 @app.get("/test")
 async def api_test(number: int):
     log.info(f"Request come in with number={number}")
