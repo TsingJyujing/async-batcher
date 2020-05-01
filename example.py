@@ -1,21 +1,48 @@
+import asyncio
 import logging
 import time
 from typing import Iterable
 
 import uvicorn
 from fastapi import FastAPI
-from starlette.responses import RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from async_batch.batch_processor import BatchProcessor, TaskQueue
 
 log = logging.getLogger(__file__)
-logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(
-    title="Async Batcher Example Project",
-    version="0.1",
-    description="Async Batch Project"
-)
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "()": "uvicorn.logging.DefaultFormatter",
+            "fmt": "%(asctime)-15s  %(levelprefix)s %(message)s",
+            "use_colors": None,
+        },
+        "access": {
+            "()": "uvicorn.logging.AccessFormatter",
+            "fmt": '%(asctime)-15s  %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+        },
+    },
+    "handlers": {
+        "default": {
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+        },
+        "access": {
+            "formatter": "access",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        "": {"handlers": ["default"], "level": "DEBUG"},
+        "uvicorn.error": {"level": "DEBUG"},
+        "uvicorn.access": {"handlers": ["access"], "level": "DEBUG", "propagate": False},
+    },
+}
 
 
 class ExampleBatchProcessor(BatchProcessor):
@@ -31,8 +58,27 @@ class ExampleBatchProcessor(BatchProcessor):
 
 tq = TaskQueue(
     batch_processor=ExampleBatchProcessor(2),
-    batch_time=3
+    max_wait_time=3
 )
+
+app = FastAPI(
+    title="Async Batcher Example Project",
+    version="0.1",
+    description="Async Batch Project",
+)
+app.task_queue = tq
+
+
+@app.on_event("startup")
+async def start_task_queue():
+    log.info("Starting Task Queue")
+    app.task_queue.start()
+
+
+@app.on_event("shutdown")
+async def start_task_queue():
+    log.info("Stopping Task Queue")
+    app.task_queue.stop()
 
 
 @app.get("/")
@@ -44,9 +90,16 @@ async def read_root():
 
 
 @app.get("/test")
-async def test_api(number: int):
+async def api_test(number: int):
+    log.info(f"Request come in with number={number}")
+    if not app.task_queue.is_alive():
+        if not app.task_queue.stop():
+            app.task_queue.start()
     start_time = time.time()
-    data = await tq.async_submit(number)
+    data = await asyncio.wait_for(
+        app.task_queue.async_submit(number),
+        timeout=app.task_queue._interval + 1.0
+    )
     spent = time.time() - start_time
     return {
         "status": "success",
@@ -56,38 +109,4 @@ async def test_api(number: int):
 
 
 if __name__ == '__main__':
-    # logging.basicConfig(format=FORMAT,level=logging.DEBUG)
-    LOGGING_CONFIG = {
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "()": "uvicorn.logging.DefaultFormatter",
-                "fmt": "%(asctime)-15s  %(levelprefix)s %(message)s",
-                "use_colors": None,
-            },
-            "access": {
-                "()": "uvicorn.logging.AccessFormatter",
-                "fmt": '%(asctime)-15s  %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
-            },
-        },
-        "handlers": {
-            "default": {
-                "formatter": "default",
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stderr",
-            },
-            "access": {
-                "formatter": "access",
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stdout",
-            },
-        },
-        "loggers": {
-            "": {"handlers": ["default"], "level": "DEBUG"},
-            "uvicorn.error": {"level": "DEBUG"},
-            "uvicorn.access": {"handlers": ["access"], "level": "DEBUG", "propagate": False},
-        },
-    }
-    tq.start()
     uvicorn.run(app, log_config=LOGGING_CONFIG)
