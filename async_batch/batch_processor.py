@@ -33,68 +33,51 @@ class TaskQueue(Thread):
             self,
             batch_processor: BatchProcessor,
             queue_capacity: int = 0,
-            batch_time: float = 0.5
+            max_wait_time: float = 0.5
     ):
         super().__init__()
-        self.batch_time = batch_time
-        self.last_execute_tick = 0
-        self.batch_processor = batch_processor
-        self.stop = False
-        self.queue = Queue(maxsize=queue_capacity)
-        self.queue_capacity = queue_capacity
-        self.mutex_lock = Lock()
+        self._interval = max_wait_time
+        self._batch_processor = batch_processor
+        self._stop = False
+        self._queue = Queue(maxsize=queue_capacity)
+        self._execution_lock = Lock()
         self._count_trigger = Lock()
 
     def _size_overflow(self):
-        return self.queue.qsize() >= self.batch_processor.get_batch_size()
+        return self._queue.qsize() >= self._batch_processor.get_batch_size()
 
     def stop(self):
-        self.stop = True
+        self._stop = True
 
     def async_submit(self, data) -> Future:
-        if not self.stop:
-
-            dp = DataPack(data)
-            self.queue.put(dp)
-            log.debug(f"Appended {data}")
-            locked = self.mutex_lock.acquire(blocking=False)
+        if not self._stop:
+            data_pack = DataPack(data)
+            self._queue.put(data_pack)
+            locked = self._execution_lock.acquire(blocking=False)
             if locked:
-                log.debug("Get lock successfully")
                 if self._size_overflow() and self._count_trigger.locked():
                     self._count_trigger.release()
-                self.mutex_lock.release()
-            # else means failed to get lock,
-            log.debug("Return future")
-            return dp
+                self._execution_lock.release()
+            # else means failed to get lock, batch processor is running
+            return data_pack
         else:
-            raise Exception("Stop accept tasks")
+            raise Exception("Task queue was stopped to accept task.")
 
-    def _process(self) -> int:
-        with self.mutex_lock:
-            data_buffer = [self.queue.get() for _ in range(min(
-                self.queue.qsize(),
-                self.batch_processor.get_batch_size()
-            ))]
-            buffer_size = len(data_buffer)
-            self.batch_processor.process(data_buffer)
+    def _process(self):
+        with self._execution_lock:
+            self._batch_processor.process([self._queue.get() for _ in range(min(
+                self._queue.qsize(),
+                self._batch_processor.get_batch_size()
+            ))])
             self._count_trigger.acquire(blocking=False)
-            return buffer_size
 
     def run(self) -> None:
-        last_processed_size = 0
-
-        while not (self.stop and self.queue.qsize() == 0):
+        while not (self._stop and self._queue.qsize() == 0):
             try:
-                if last_processed_size != self.batch_processor.get_batch_size():
-                    self._count_trigger.acquire(timeout=self.batch_time)
-                else:
-                    log.debug("Busy mode, skip trigger")
-                if self.queue.qsize() > 0:
-                    log.debug("Start to process data")
-                    last_processed_size = self._process()
-                else:
-                    last_processed_size = 0
-                    log.debug("No data to process")
+                if self._queue.qsize() < self._batch_processor.get_batch_size():
+                    self._count_trigger.acquire(timeout=self._interval)
+                if self._queue.qsize() > 0:
+                    self._process()
             except Exception as ex:
-                log.fatal("Some error happened while doing batch", exc_info=ex)
+                log.fatal("Some critical error happened while doing batch", exc_info=ex)
                 time.sleep(1)
