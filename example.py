@@ -76,7 +76,7 @@ async def start_task_queue():
 
 
 @app.on_event("shutdown")
-async def start_task_queue():
+async def stop_task_queue():
     log.info("Stopping Task Queue")
     app.task_queue.stop()
 
